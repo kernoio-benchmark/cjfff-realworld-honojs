@@ -1,3 +1,5 @@
+# Multi-stage Dockerfile for RealWorld Hono.js Application
+
 # Build stage
 FROM node:20-alpine AS builder
 
@@ -7,54 +9,47 @@ WORKDIR /app
 RUN apk add --no-cache openssl
 
 # Copy package files
-COPY package*.json ./
+COPY package.json package-lock.json* ./
 
-# Install all dependencies (including dev dependencies for build)
+# Install all dependencies
 RUN npm install
 
-# Copy Prisma schema first
+# Copy application source
 COPY prisma ./prisma
+COPY src ./src
+COPY tsconfig.json ./
 
 # Generate Prisma Client
-RUN npm run prisma:generate
+RUN npx prisma generate
 
-# Copy source code
-COPY src ./src
-
-# Build using esbuild as a fallback since tsc has type errors
-# Install esbuild and build the project
-RUN npm install -D esbuild && \
-    npx esbuild src/index.ts --bundle --platform=node --format=esm --outdir=dist --external:@prisma/client --external:@hono/* --external:hono --external:jose --external:bcryptjs --external:zod --packages=external
+# Build the application
+RUN npm run build
 
 # Production stage
-FROM node:20-alpine AS production
+FROM node:20-alpine
 
 WORKDIR /app
 
-# Install OpenSSL for Prisma
+# Install OpenSSL for Prisma runtime
 RUN apk add --no-cache openssl
 
 # Copy package files
-COPY package*.json ./
+COPY package.json package-lock.json* ./
 
-# Install only production dependencies
-RUN npm install --omit=dev && \
-    npm cache clean --force
+# Install production dependencies only
+RUN npm install --production
 
-# Copy Prisma schema for runtime
+# Copy Prisma schema
 COPY prisma ./prisma
+
+# Generate Prisma Client for production
+RUN npx prisma generate
 
 # Copy built application from builder stage
 COPY --from=builder /app/dist ./dist
 
-# Copy node_modules with generated Prisma Client from builder
-COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
-
-# Expose port (default Hono.js port, adjust if needed)
+# Expose application port
 EXPOSE 3000
 
 # Start the application
-# Note: Run migrations and seed before starting if needed:
-# docker run -e DATABASE_URL=... <image> sh -c "npm run prisma:migrate && npm run db:seed && npm start"
 CMD ["npm", "start"]
